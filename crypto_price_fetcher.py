@@ -1,8 +1,8 @@
 import yfinance as yf
-import pandas as pd
 from datetime import datetime, timedelta
 from typing import Tuple, Dict, Optional
 import sys
+import numpy as np
 
 # Mapping of common crypto and FIAT symbols
 CRYPTO_SYMBOLS = {
@@ -75,7 +75,7 @@ def parse_pair(pair: str) -> Tuple[str, str]:
     )
 
 
-def get_yfinance_symbol(symbol: str, is_crypto: bool) -> str:
+def get_yfinance_symbol(symbol: str, is_crypto: bool) -> Optional[str]:
     """Get yfinance symbol for a cryptocurrency or fiat currency."""
     symbol = symbol.upper()
     
@@ -133,10 +133,30 @@ def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[flo
             print(f"  No data found for {ticker_symbol}", file=sys.stderr)
             return None
         
-        # Find closest date to target date
-        closest_idx = (data.index.date - target_date.date()).argmin()
+        # Handle both single row and multiple rows in dataframe
+        if isinstance(data, dict) or data.shape[0] == 0:
+            print(f"  No price data available for {ticker_symbol}", file=sys.stderr)
+            return None
+        
+        # Convert index to date format for comparison
+        closest_idx = 0
+        min_diff = abs((data.index[0].date() - target_date.date()).days)
+        
+        for i, idx in enumerate(data.index):
+            current_diff = abs((idx.date() - target_date.date()).days)
+            if current_diff < min_diff:
+                min_diff = current_diff
+                closest_idx = i
+        
         closest_date = data.index[closest_idx]
-        closest_price = float(data.iloc[closest_idx]['Close'])
+        # Get Close price and convert to float
+        close_price = data['Close'].iloc[closest_idx]
+        
+        # Handle numpy types
+        if isinstance(close_price, (np.integer, np.floating)):
+            closest_price = float(close_price)
+        else:
+            closest_price = float(close_price)
         
         print(f"  Found price for {ticker_symbol}: {closest_price:.8f} on {closest_date.date()}", file=sys.stderr)
         
