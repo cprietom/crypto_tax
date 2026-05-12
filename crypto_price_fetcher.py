@@ -27,6 +27,9 @@ CRYPTO_SYMBOLS = {
     "AAVE": "AAVE-USD",
 }
 
+# Stablecoins that are always ~1.0 USD
+STABLECOINS = {"USDT", "USDC", "BUSD", "DAI", "USDP", "TUSD"}
+
 # Mapping for fiat to crypto pairs
 FIAT_TO_CRYPTO_PAIRS = {
     "USD": None,  # USD is base
@@ -107,26 +110,32 @@ def validate_date(date_str: str) -> datetime:
         )
 
 
-def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[float]:
+def get_price_at_date(ticker_symbol: str, target_date: datetime, is_stablecoin: bool = False) -> Optional[float]:
     """
     Get price for a ticker on a specific date using yfinance.
     
     Args:
         ticker_symbol: yfinance ticker symbol (e.g., 'BTC-USD')
         target_date: Target date as datetime object
+        is_stablecoin: Whether this is a stablecoin (always returns ~1.0)
         
     Returns:
         Price or None if unavailable
     """
     try:
+        # Stablecoins are always 1.0
+        if is_stablecoin:
+            print(f"  Using stablecoin value: 1.0 USD", file=sys.stderr)
+            return 1.0
+        
         # Add buffer to ensure we get data
         start_date = target_date - timedelta(days=5)
         end_date = target_date + timedelta(days=2)
         
         print(f"  Fetching {ticker_symbol} data from {start_date.date()} to {end_date.date()}...", file=sys.stderr)
         
-        # Download data
-        data = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False)
+        # Download data - suppress warnings
+        data = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False, ignore_tz=True)
         
         if data.empty:
             print(f"  No data found for {ticker_symbol}", file=sys.stderr)
@@ -167,9 +176,7 @@ def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[flo
         return closest_price
         
     except Exception as e:
-        import traceback
         print(f"  Error fetching {ticker_symbol}: {str(e)}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
         return None
 
 
@@ -202,7 +209,11 @@ def get_historical_price(pair: str, date: str) -> Optional[Dict]:
         if target_symbol in CRYPTO_SYMBOLS:
             # Crypto-to-crypto pair
             target_yf_symbol = get_yfinance_symbol(target_symbol, is_crypto=True)
-            target_price = get_price_at_date(target_yf_symbol, target_date)
+            
+            # Check if target is a stablecoin
+            is_target_stablecoin = target_symbol in STABLECOINS
+            
+            target_price = get_price_at_date(target_yf_symbol, target_date, is_stablecoin=is_target_stablecoin)
             
             if target_price and target_price != 0:
                 price = crypto_price / target_price
