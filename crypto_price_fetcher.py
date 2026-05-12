@@ -120,7 +120,7 @@ def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[flo
         Price or None if unavailable
     """
     try:
-        # Add 2 days buffer to ensure we get data
+        # Add buffer to ensure we get data
         start_date = target_date - timedelta(days=5)
         end_date = target_date + timedelta(days=2)
         
@@ -134,15 +134,16 @@ def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[flo
             return None
         
         # Find closest date to target date
-        closest_date = min(data.index, key=lambda x: abs(x.date() - target_date.date()))
-        closest_price = data.loc[closest_date, 'Close']
+        closest_idx = (data.index.date - target_date.date()).argmin()
+        closest_date = data.index[closest_idx]
+        closest_price = float(data.iloc[closest_idx]['Close'])
         
         print(f"  Found price for {ticker_symbol}: {closest_price:.8f} on {closest_date.date()}", file=sys.stderr)
         
-        return float(closest_price)
+        return closest_price
         
     except Exception as e:
-        print(f"  Error fetching {ticker_symbol}: {e}", file=sys.stderr)
+        print(f"  Error fetching {ticker_symbol}: {str(e)}", file=sys.stderr)
         return None
 
 
@@ -211,7 +212,7 @@ def get_historical_price(pair: str, date: str) -> Optional[Dict]:
         print(f"Error: {e}", file=sys.stderr)
         return None
     except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
+        print(f"Unexpected error: {str(e)}", file=sys.stderr)
         return None
 
 
