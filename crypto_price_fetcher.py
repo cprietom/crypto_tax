@@ -2,7 +2,6 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Tuple, Dict, Optional
 import sys
-import numpy as np
 
 # Mapping of common crypto and FIAT symbols
 CRYPTO_SYMBOLS = {
@@ -133,37 +132,44 @@ def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[flo
             print(f"  No data found for {ticker_symbol}", file=sys.stderr)
             return None
         
-        # Handle both single row and multiple rows in dataframe
-        if isinstance(data, dict) or data.shape[0] == 0:
+        # Check if we got a valid dataframe
+        if not hasattr(data, 'index') or len(data) == 0:
             print(f"  No price data available for {ticker_symbol}", file=sys.stderr)
             return None
         
-        # Convert index to date format for comparison
+        # Find closest date manually
         closest_idx = 0
-        min_diff = abs((data.index[0].date() - target_date.date()).days)
+        target_date_only = target_date.date()
+        min_diff = abs((data.index[0].date() - target_date_only).days)
         
-        for i, idx in enumerate(data.index):
-            current_diff = abs((idx.date() - target_date.date()).days)
+        for i in range(len(data)):
+            current_date = data.index[i].date()
+            current_diff = abs((current_date - target_date_only).days)
             if current_diff < min_diff:
                 min_diff = current_diff
                 closest_idx = i
         
         closest_date = data.index[closest_idx]
-        # Get Close price and convert to float
-        close_price = data['Close'].iloc[closest_idx]
         
-        # Handle numpy types
-        if isinstance(close_price, (np.integer, np.floating)):
-            closest_price = float(close_price)
+        # Get the Close price - access as scalar value first
+        row = data.iloc[closest_idx]
+        close_value = row['Close']
+        
+        # Convert to Python float - handle different numeric types
+        if hasattr(close_value, 'item'):
+            # numpy/pandas scalar
+            closest_price = float(close_value.item())
         else:
-            closest_price = float(close_price)
+            closest_price = float(close_value)
         
         print(f"  Found price for {ticker_symbol}: {closest_price:.8f} on {closest_date.date()}", file=sys.stderr)
         
         return closest_price
         
     except Exception as e:
+        import traceback
         print(f"  Error fetching {ticker_symbol}: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return None
 
 
