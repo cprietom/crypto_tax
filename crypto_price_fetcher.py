@@ -1,260 +1,118 @@
 import yfinance as yf
 from datetime import datetime, timedelta
-from typing import Tuple, Dict, Optional
+import pandas as pd
 import sys
 
-# Mapping of common crypto and FIAT symbols
-CRYPTO_SYMBOLS = {
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "XRP": "XRP-USD",
-    "ADA": "ADA-USD",
-    "SOL": "SOL-USD",
-    "DOGE": "DOGE-USD",
-    "USDT": "USDT-USD",
-    "USDC": "USDC-USD",
-    "BUSD": "BUSD-USD",
-    "DAI": "DAI-USD",
-    "MATIC": "MATIC-USD",
-    "LINK": "LINK-USD",
-    "LTC": "LTC-USD",
-    "BCH": "BCH-USD",
-    "XLM": "XLM-USD",
-    "ATOM": "ATOM-USD",
-    "DOT": "DOT-USD",
-    "SHIB": "SHIB-USD",
-    "UNI": "UNI-USD",
-    "AAVE": "AAVE-USD",
-}
+# --- CONFIGURACIÓN DINÁMICA ---
 
-# Stablecoins that are always ~1.0 USD
-STABLECOINS = {"USDT", "USDC", "BUSD", "DAI", "USDP", "TUSD"}
+def get_ticker_symbol(symbol: str) -> str:
+    """Mapea un símbolo de cripto al formato de Yahoo Finance."""
+    special_cases = {
+        "DOT": "DOT1-USD",
+        "MATIC": "POL-USD",  # MATIC migró a POL
+    }
+    if symbol in special_cases:
+        return special_cases[symbol]
+    return f"{symbol}-USD"
 
-# Mapping for fiat to crypto pairs
-FIAT_TO_CRYPTO_PAIRS = {
-    "USD": None,  # USD is base
-    "EUR": "EURUSD=X",
-    "GBP": "GBPUSD=X",
-    "JPY": "JPYUSD=X",
-    "AUD": "AUDUSD=X",
-    "CAD": "CADUSD=X",
-    "CHF": "CHFUSD=X",
-    "CNY": "CNYUSD=X",
-    "SEK": "SEKUSD=X",
-    "NZD": "NZDUSD=X",
-}
+def get_fiat_rate_ticker(symbol: str) -> str:
+    """Retorna el ticker para el tipo de cambio contra el USD."""
+    if symbol == "USD": return None
+    return f"{symbol}USD=X"
 
-FIAT_CURRENCIES = set(FIAT_TO_CRYPTO_PAIRS.keys())
-
-
-def parse_pair(pair: str) -> Tuple[str, str]:
-    """
-    Parse a crypto pair like 'BTCUSDC' into components.
-    
-    Args:
-        pair: String in format 'CRYPTO1CRYPTO2' or 'CRYPTOFIAT'
-        
-    Returns:
-        Tuple of (crypto_symbol, target_symbol)
-    """
-    pair = pair.upper()
-    
-    # Try to find common crypto symbols (usually 3-4 chars)
-    for crypto_len in [4, 3]:
-        if len(pair) > crypto_len:
-            crypto = pair[:crypto_len]
-            target = pair[crypto_len:]
-            
-            if crypto in CRYPTO_SYMBOLS or crypto in FIAT_CURRENCIES:
-                if target in CRYPTO_SYMBOLS or target in FIAT_CURRENCIES:
-                    return crypto, target
-    
-    raise ValueError(
-        f"Invalid pair format: {pair}. "
-        f"Use format like 'BTCUSDC' or 'ETHEUR'. "
-        f"Supported cryptos: {', '.join(sorted(CRYPTO_SYMBOLS.keys()))} "
-        f"Supported fiats: {', '.join(sorted(FIAT_CURRENCIES))}"
-    )
-
-
-def get_yfinance_symbol(symbol: str, is_crypto: bool) -> Optional[str]:
-    """Get yfinance symbol for a cryptocurrency or fiat currency."""
-    symbol = symbol.upper()
-    
-    if is_crypto:
-        if symbol in CRYPTO_SYMBOLS:
-            return CRYPTO_SYMBOLS[symbol]
-        raise ValueError(f"Unknown cryptocurrency: {symbol}")
-    else:
-        if symbol in FIAT_CURRENCIES:
-            return FIAT_TO_CRYPTO_PAIRS[symbol]
-        raise ValueError(f"Unknown FIAT currency: {symbol}")
-
-
-def validate_date(date_str: str) -> datetime:
-    """
-    Validate and return datetime object.
-    
-    Args:
-        date_str: Date in format 'YYYY-MM-DD'
-        
-    Returns:
-        datetime object
-    """
+def fetch_yahoo_price(ticker: str, date_str: str) -> float:
+    """Descarga el precio de cierre de un ticker de Yahoo de forma robusta."""
     try:
-        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        return date_obj
-    except ValueError:
-        raise ValueError(
-            f"Invalid date format: {date_str}. Use format 'YYYY-MM-DD'"
-        )
-
-
-def get_price_at_date(ticker_symbol: str, target_date: datetime, is_stablecoin: bool = False) -> Optional[float]:
-    """
-    Get price for a ticker on a specific date using yfinance.
-    
-    Args:
-        ticker_symbol: yfinance ticker symbol (e.g., 'BTC-USD')
-        target_date: Target date as datetime object
-        is_stablecoin: Whether this is a stablecoin (always returns ~1.0)
+        target_date = datetime.strptime(date_str, '%Y-%m-%d')
+        # Pedimos un rango para asegurar que haya datos (fines de semana en FIAT)
+        start_dt = (target_date - timedelta(days=2)).strftime('%Y-%m-%d')
+        end_dt = (target_date + timedelta(days=3)).strftime('%Y-%m-%d')
         
-    Returns:
-        Price or None if unavailable
-    """
-    try:
-        # Stablecoins are always 1.0
-        if is_stablecoin:
-            print(f"  Using stablecoin value: 1.0 USD", file=sys.stderr)
-            return 1.0
-        
-        # Add buffer to ensure we get data
-        start_date = target_date - timedelta(days=5)
-        end_date = target_date + timedelta(days=2)
-        
-        print(f"  Fetching {ticker_symbol} data from {start_date.date()} to {end_date.date()}...", file=sys.stderr)
-        
-        # Download data - suppress warnings
-        data = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False, ignore_tz=True)
+        data = yf.download(ticker, start=start_dt, end=end_dt, progress=False)
         
         if data.empty:
-            print(f"  No data found for {ticker_symbol}", file=sys.stderr)
             return None
         
-        # Check if we got a valid dataframe
-        if not hasattr(data, 'index') or len(data) == 0:
-            print(f"  No price data available for {ticker_symbol}", file=sys.stderr)
-            return None
-        
-        # Find closest date manually
-        closest_idx = 0
-        target_date_only = target_date.date()
-        min_diff = abs((data.index[0].date() - target_date_only).days)
-        
-        for i in range(len(data)):
-            current_date = data.index[i].date()
-            current_diff = abs((current_date - target_date_only).days)
-            if current_diff < min_diff:
-                min_diff = current_diff
-                closest_idx = i
-        
-        closest_date = data.index[closest_idx]
-        
-        # Get the Close price - access as scalar value first
-        row = data.iloc[closest_idx]
-        close_value = row['Close']
-        
-        # Convert to Python float - handle different numeric types
-        if hasattr(close_value, 'item'):
-            # numpy/pandas scalar
-            closest_price = float(close_value.item())
+        # Manejo de MultiIndex (Yahoo a veces anida el ticker en las columnas)
+        if isinstance(data.columns, pd.MultiIndex):
+            close_data = data.xs('Close', axis=1, level=0 if 'Close' in data.columns.levels[0] else 1)
         else:
-            closest_price = float(close_value)
+            close_data = data['Close']
         
-        print(f"  Found price for {ticker_symbol}: {closest_price:.8f} on {closest_date.date()}", file=sys.stderr)
+        # Forzar a Serie 1D si es un DataFrame de una columna
+        if isinstance(close_data, pd.DataFrame):
+            close_data = close_data.iloc[:, 0]
+
+        target_ts = pd.Timestamp(target_date.date())
+        # Buscar el índice más cercano a la fecha pedida
+        idx = close_data.index.get_indexer([target_ts], method='nearest')[0]
         
-        return closest_price
-        
-    except Exception as e:
-        print(f"  Error fetching {ticker_symbol}: {str(e)}", file=sys.stderr)
+        # Extraer el valor escalar
+        precio_crudo = close_data.iloc[idx]
+        if isinstance(precio_crudo, pd.Series):
+            precio_crudo = precio_crudo.iloc[0]
+            
+        return float(precio_crudo)
+    except Exception:
         return None
 
-
-def get_historical_price(pair: str, date: str) -> Optional[Dict]:
-    """
-    Fetch historical price for a crypto pair on a specific date.
+def get_historical_price(pair: str, date: str):
+    """Lógica principal para calcular el precio de cualquier par."""
+    pair = pair.upper()
     
-    Args:
-        pair: Crypto pair like 'BTCUSDC' or 'ETHEUR'
-        date: Date in format 'YYYY-MM-DD'
-        
-    Returns:
-        Dictionary with price information or None if fetch fails
-    """
+    # 1. Intentar separar el par inteligentemente
+    quote_symbols = ["EUR", "USD", "USDC", "USDT", "BTC", "ETH", "BNB", "DAI"]
+    crypto_symbol = ""
+    target_symbol = ""
+    
+    for q in quote_symbols:
+        if pair.endswith(q):
+            target_symbol = q
+            crypto_symbol = pair[:-len(q)]
+            break
+    
+    if not crypto_symbol:
+        # Fallback si no coincide con los comunes: asume los últimos 3 caracteres
+        crypto_symbol = pair[:-3]
+        target_symbol = pair[-3:]
+
     try:
-        # Parse the pair
-        crypto_symbol, target_symbol = parse_pair(pair)
-        
-        # Validate date
-        target_date = validate_date(date)
-        
-        # Get crypto price (always in terms of USD)
-        crypto_yf_symbol = get_yfinance_symbol(crypto_symbol, is_crypto=True)
-        crypto_price = get_price_at_date(crypto_yf_symbol, target_date)
-        
-        if crypto_price is None:
+        # A. Precio del activo base en USD
+        price_base_usd = fetch_yahoo_price(get_ticker_symbol(crypto_symbol), date)
+        if price_base_usd is None:
             return None
-        
-        # Determine if target is crypto or fiat
-        if target_symbol in CRYPTO_SYMBOLS:
-            # Crypto-to-crypto pair
-            target_yf_symbol = get_yfinance_symbol(target_symbol, is_crypto=True)
-            
-            # Check if target is a stablecoin
-            is_target_stablecoin = target_symbol in STABLECOINS
-            
-            target_price = get_price_at_date(target_yf_symbol, target_date, is_stablecoin=is_target_stablecoin)
-            
-            if target_price and target_price != 0:
-                price = crypto_price / target_price
-            else:
-                return None
+
+        # B. Calcular precio final según el target
+        if target_symbol in ["USD", "USDC", "USDT", "DAI"]:
+            price = price_base_usd
+        elif target_symbol in ["BTC", "ETH", "BNB"]:
+            # Triangulación Cripto-Cripto
+            price_target_usd = fetch_yahoo_price(get_ticker_symbol(target_symbol), date)
+            if not price_target_usd: return None
+            price = price_base_usd / price_target_usd
         else:
-            # Crypto-to-fiat pair
-            target_yf_symbol = get_yfinance_symbol(target_symbol, is_crypto=False)
-            
-            if target_yf_symbol is None:
-                # USD is the base, so crypto_price is already in USD
-                price = crypto_price
-            else:
-                # Get fiat exchange rate to USD
-                fiat_rate = get_price_at_date(target_yf_symbol, target_date)
-                
-                if fiat_rate and fiat_rate != 0:
-                    # Convert USD price to target fiat
-                    price = crypto_price / fiat_rate
-                else:
-                    return None
-        
+            # Triangulación Cripto-Fiat (EUR, GBP, etc.)
+            fiat_ticker = get_fiat_rate_ticker(target_symbol)
+            fiat_to_usd = fetch_yahoo_price(fiat_ticker, date) # Precio de 1 FIAT en USD
+            if not fiat_to_usd: return None
+            price = price_base_usd / fiat_to_usd
+
+        # Retornamos el diccionario completo que espera main()
         return {
-            "pair": pair.upper(),
+            "pair": pair,
             "crypto": crypto_symbol,
             "target": target_symbol,
             "date": date,
             "price": price,
-            "formatted_price": f"{price:,.8f}" if price else "N/A"
+            "formatted_price": f"{price:,.8f}"
         }
         
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return None
     except Exception as e:
         print(f"Unexpected error: {str(e)}", file=sys.stderr)
         return None
 
-
 def main():
-    """CLI interface for the crypto price fetcher."""
+    """CLI interface original."""
     if len(sys.argv) != 3:
         print(
             "Usage: python crypto_price_fetcher.py <PAIR> <DATE>\n"
@@ -278,7 +136,6 @@ def main():
     else:
         print(f"Failed to fetch price data for {pair} on {date}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
