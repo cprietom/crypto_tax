@@ -1,11 +1,8 @@
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Union, Tuple, Dict, Optional
 import sys
 import time
-
-# CoinGecko API endpoints
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
 
 # Mapping of common crypto and FIAT symbols to CoinGecko IDs
 CRYPTO_ID_MAP = {
@@ -45,7 +42,7 @@ FIAT_CURRENCIES = {
 }
 
 # Rate limiting
-REQUEST_DELAY = 0.5  # seconds between requests
+REQUEST_DELAY = 1  # seconds between requests
 last_request_time = 0
 
 
@@ -123,14 +120,75 @@ def validate_date(date_str: str) -> datetime:
         )
 
 
-def get_historical_price(
-    pair: str, date: str
-) -> Optional[Dict]:
+def get_price_from_coingecko(crypto_id: str, vs_currency: str, target_date: datetime) -> Optional[float]:
+    """
+    Get historical price from CoinGecko using range-based approach.
+    Uses the /market_chart/range endpoint which is more stable.
+    
+    Args:
+        crypto_id: CoinGecko cryptocurrency ID
+        vs_currency: Target currency code (e.g., 'usd', 'eur')
+        target_date: Target date as datetime object
+        
+    Returns:
+        Price or None if unavailable
+    """
+    try:
+        rate_limit()
+        
+        # Use the range endpoint with a 60-day window around the target date
+        url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart/range"
+        
+        # Calculate date range (30 days before and 30 days after target)
+        start_date = target_date - timedelta(days=30)
+        end_date = target_date + timedelta(days=30)
+        
+        start_timestamp = int(start_date.timestamp())
+        end_timestamp = int(end_date.timestamp())
+        
+        params = {
+            "vs_currency": vs_currency,
+            "from": start_timestamp,
+            "to": end_timestamp,
+        }
+        
+        print(f"  Querying {crypto_id} from {start_date.date()} to {end_date.date()}...", file=sys.stderr)
+        
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Find the price closest to the target date
+        prices = data.get("prices", [])
+        if not prices:
+            print(f"  No price data found for {crypto_id}", file=sys.stderr)
+            return None
+        
+        target_timestamp = int(target_date.timestamp() * 1000)
+        closest_price = None
+        closest_diff = float('inf')
+        closest_date = None
+        
+        for timestamp, price in prices:
+            diff = abs(timestamp - target_timestamp)
+            if diff < closest_diff:
+                closest_diff = diff
+                closest_price = price
+                closest_date = datetime.fromtimestamp(timestamp / 1000)
+        
+        if closest_price is not None:
+            print(f"  Found price for {crypto_id}: {closest_price} on {closest_date.date()}", file=sys.stderr)
+        
+        return closest_price
+        
+    except requests.exceptions.RequestException as e:
+        print(f"  API Error for {crypto_id}: {e}", file=sys.stderr)
+        return None
+
+
+def get_historical_price(pair: str, date: str) -> Optional[Dict]:
     """
     Fetch historical price for a crypto pair on a specific date.
-    
-    Uses CoinGecko's market chart endpoint which is more reliable for
-    historical data and doesn't have the same rate limiting issues.
     
     Args:
         pair: Crypto pair like 'BTCUSDC' or 'ETHEUR'
@@ -161,70 +219,18 @@ def get_historical_price(
             target_id = None
             is_crypto_target = False
         
-        rate_limit()
+        # Get crypto price
+        price = get_price_from_coingecko(crypto_id, vs_currency, target_date)
         
-        # Fetch data from CoinGecko market chart endpoint
-        # This is more reliable for historical data
-        url = f"{COINGECKO_API_URL}/coins/{crypto_id}/market_chart"
-        
-        # Calculate days before target date
-        days_diff = (datetime.now() - target_date).days
-        
-        params = {
-            "vs_currency": vs_currency,
-            "days": max(days_diff, 1),
-            "interval": "daily"
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Find the price closest to the target date
-        prices = data.get("prices", [])
-        if not prices:
+        if price is None:
             return None
-        
-        # Convert timestamp to date and find closest match
-        target_timestamp = int(target_date.timestamp() * 1000)
-        closest_price = None
-        closest_diff = float('inf')
-        
-        for timestamp, price in prices:
-            diff = abs(timestamp - target_timestamp)
-            if diff < closest_diff:
-                closest_diff = diff
-                closest_price = price
-        
-        if closest_price is None:
-            return None
-        
-        price = closest_price
         
         if is_crypto_target:
-            # Get price in USD for target crypto
-            rate_limit()
+            # Get target crypto price in USD
+            target_price = get_price_from_coingecko(target_id, "usd", target_date)
             
-            target_url = f"{COINGECKO_API_URL}/coins/{target_id}/market_chart"
-            target_response = requests.get(target_url, params=params, timeout=10)
-            target_response.raise_for_status()
-            target_data = target_response.json()
-            
-            target_prices = target_data.get("prices", [])
-            if not target_prices:
-                return None
-            
-            closest_target_price = None
-            closest_target_diff = float('inf')
-            
-            for timestamp, target_price in target_prices:
-                diff = abs(timestamp - target_timestamp)
-                if diff < closest_target_diff:
-                    closest_target_diff = diff
-                    closest_target_price = target_price
-            
-            if closest_target_price and closest_target_price != 0:
-                price = price / closest_target_price
+            if target_price and target_price != 0:
+                price = price / target_price
             else:
                 return None
         
