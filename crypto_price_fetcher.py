@@ -1,58 +1,48 @@
-import requests
+import yfinance as yf
+import pandas as pd
 from datetime import datetime, timedelta
-from typing import Union, Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional
 import sys
-import time
 
-# Mapping of common crypto and FIAT symbols to CoinGecko IDs
-CRYPTO_ID_MAP = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "XRP": "ripple",
-    "ADA": "cardano",
-    "SOL": "solana",
-    "DOGE": "dogecoin",
-    "USDT": "tether",
-    "USDC": "usd-coin",
-    "BUSD": "binance-usd",
-    "DAI": "dai",
-    "MATIC": "matic-network",
-    "LINK": "chainlink",
-    "LTC": "litecoin",
-    "BCH": "bitcoin-cash",
-    "XLM": "stellar",
-    "ATOM": "cosmos",
-    "DOT": "polkadot",
-    "SHIB": "shiba-inu",
-    "UNI": "uniswap",
-    "AAVE": "aave",
+# Mapping of common crypto and FIAT symbols
+CRYPTO_SYMBOLS = {
+    "BTC": "BTC-USD",
+    "ETH": "ETH-USD",
+    "XRP": "XRP-USD",
+    "ADA": "ADA-USD",
+    "SOL": "SOL-USD",
+    "DOGE": "DOGE-USD",
+    "USDT": "USDT-USD",
+    "USDC": "USDC-USD",
+    "BUSD": "BUSD-USD",
+    "DAI": "DAI-USD",
+    "MATIC": "MATIC-USD",
+    "LINK": "LINK-USD",
+    "LTC": "LTC-USD",
+    "BCH": "BCH-USD",
+    "XLM": "XLM-USD",
+    "ATOM": "ATOM-USD",
+    "DOT": "DOT-USD",
+    "SHIB": "SHIB-USD",
+    "UNI": "UNI-USD",
+    "AAVE": "AAVE-USD",
 }
 
-FIAT_CURRENCIES = {
-    "USD": "usd",
-    "EUR": "eur",
-    "GBP": "gbp",
-    "JPY": "jpy",
-    "AUD": "aud",
-    "CAD": "cad",
-    "CHF": "chf",
-    "CNY": "cny",
-    "SEK": "sek",
-    "NZD": "nzd",
+# Mapping for fiat to crypto pairs
+FIAT_TO_CRYPTO_PAIRS = {
+    "USD": None,  # USD is base
+    "EUR": "EURUSD=X",
+    "GBP": "GBPUSD=X",
+    "JPY": "JPYUSD=X",
+    "AUD": "AUDUSD=X",
+    "CAD": "CADUSD=X",
+    "CHF": "CHFUSD=X",
+    "CNY": "CNYUSD=X",
+    "SEK": "SEKUSD=X",
+    "NZD": "NZDUSD=X",
 }
 
-# Rate limiting
-REQUEST_DELAY = 1  # seconds between requests
-last_request_time = 0
-
-
-def rate_limit():
-    """Implement rate limiting to avoid API throttling."""
-    global last_request_time
-    elapsed = time.time() - last_request_time
-    if elapsed < REQUEST_DELAY:
-        time.sleep(REQUEST_DELAY - elapsed)
-    last_request_time = time.time()
+FIAT_CURRENCIES = set(FIAT_TO_CRYPTO_PAIRS.keys())
 
 
 def parse_pair(pair: str) -> Tuple[str, str]:
@@ -73,32 +63,30 @@ def parse_pair(pair: str) -> Tuple[str, str]:
             crypto = pair[:crypto_len]
             target = pair[crypto_len:]
             
-            if crypto in CRYPTO_ID_MAP or crypto in FIAT_CURRENCIES:
-                if target in CRYPTO_ID_MAP or target in FIAT_CURRENCIES:
+            if crypto in CRYPTO_SYMBOLS or crypto in FIAT_CURRENCIES:
+                if target in CRYPTO_SYMBOLS or target in FIAT_CURRENCIES:
                     return crypto, target
     
     raise ValueError(
         f"Invalid pair format: {pair}. "
         f"Use format like 'BTCUSDC' or 'ETHEUR'. "
-        f"Supported cryptos: {', '.join(sorted(CRYPTO_ID_MAP.keys()))} "
-        f"Supported fiats: {', '.join(sorted(FIAT_CURRENCIES.keys()))}"
+        f"Supported cryptos: {', '.join(sorted(CRYPTO_SYMBOLS.keys()))} "
+        f"Supported fiats: {', '.join(sorted(FIAT_CURRENCIES))}"
     )
 
 
-def get_crypto_id(symbol: str) -> str:
-    """Get CoinGecko ID for a crypto symbol."""
+def get_yfinance_symbol(symbol: str, is_crypto: bool) -> str:
+    """Get yfinance symbol for a cryptocurrency or fiat currency."""
     symbol = symbol.upper()
-    if symbol in CRYPTO_ID_MAP:
-        return CRYPTO_ID_MAP[symbol]
-    raise ValueError(f"Unknown cryptocurrency: {symbol}")
-
-
-def get_fiat_code(symbol: str) -> str:
-    """Get FIAT code for a currency symbol."""
-    symbol = symbol.upper()
-    if symbol in FIAT_CURRENCIES:
-        return FIAT_CURRENCIES[symbol]
-    raise ValueError(f"Unknown FIAT currency: {symbol}")
+    
+    if is_crypto:
+        if symbol in CRYPTO_SYMBOLS:
+            return CRYPTO_SYMBOLS[symbol]
+        raise ValueError(f"Unknown cryptocurrency: {symbol}")
+    else:
+        if symbol in FIAT_CURRENCIES:
+            return FIAT_TO_CRYPTO_PAIRS[symbol]
+        raise ValueError(f"Unknown FIAT currency: {symbol}")
 
 
 def validate_date(date_str: str) -> datetime:
@@ -120,69 +108,41 @@ def validate_date(date_str: str) -> datetime:
         )
 
 
-def get_price_from_coingecko(crypto_id: str, vs_currency: str, target_date: datetime) -> Optional[float]:
+def get_price_at_date(ticker_symbol: str, target_date: datetime) -> Optional[float]:
     """
-    Get historical price from CoinGecko using range-based approach.
-    Uses the /market_chart/range endpoint which is more stable.
+    Get price for a ticker on a specific date using yfinance.
     
     Args:
-        crypto_id: CoinGecko cryptocurrency ID
-        vs_currency: Target currency code (e.g., 'usd', 'eur')
+        ticker_symbol: yfinance ticker symbol (e.g., 'BTC-USD')
         target_date: Target date as datetime object
         
     Returns:
         Price or None if unavailable
     """
     try:
-        rate_limit()
+        # Add 2 days buffer to ensure we get data
+        start_date = target_date - timedelta(days=5)
+        end_date = target_date + timedelta(days=2)
         
-        # Use the range endpoint with a 60-day window around the target date
-        url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart/range"
+        print(f"  Fetching {ticker_symbol} data from {start_date.date()} to {end_date.date()}...", file=sys.stderr)
         
-        # Calculate date range (30 days before and 30 days after target)
-        start_date = target_date - timedelta(days=30)
-        end_date = target_date + timedelta(days=30)
+        # Download data
+        data = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False)
         
-        start_timestamp = int(start_date.timestamp())
-        end_timestamp = int(end_date.timestamp())
-        
-        params = {
-            "vs_currency": vs_currency,
-            "from": start_timestamp,
-            "to": end_timestamp,
-        }
-        
-        print(f"  Querying {crypto_id} from {start_date.date()} to {end_date.date()}...", file=sys.stderr)
-        
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Find the price closest to the target date
-        prices = data.get("prices", [])
-        if not prices:
-            print(f"  No price data found for {crypto_id}", file=sys.stderr)
+        if data.empty:
+            print(f"  No data found for {ticker_symbol}", file=sys.stderr)
             return None
         
-        target_timestamp = int(target_date.timestamp() * 1000)
-        closest_price = None
-        closest_diff = float('inf')
-        closest_date = None
+        # Find closest date to target date
+        closest_date = min(data.index, key=lambda x: abs(x.date() - target_date.date()))
+        closest_price = data.loc[closest_date, 'Close']
         
-        for timestamp, price in prices:
-            diff = abs(timestamp - target_timestamp)
-            if diff < closest_diff:
-                closest_diff = diff
-                closest_price = price
-                closest_date = datetime.fromtimestamp(timestamp / 1000)
+        print(f"  Found price for {ticker_symbol}: {closest_price:.8f} on {closest_date.date()}", file=sys.stderr)
         
-        if closest_price is not None:
-            print(f"  Found price for {crypto_id}: {closest_price} on {closest_date.date()}", file=sys.stderr)
+        return float(closest_price)
         
-        return closest_price
-        
-    except requests.exceptions.RequestException as e:
-        print(f"  API Error for {crypto_id}: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"  Error fetching {ticker_symbol}: {e}", file=sys.stderr)
         return None
 
 
@@ -201,38 +161,42 @@ def get_historical_price(pair: str, date: str) -> Optional[Dict]:
         # Parse the pair
         crypto_symbol, target_symbol = parse_pair(pair)
         
-        # Get CoinGecko IDs
-        crypto_id = get_crypto_id(crypto_symbol)
-        
         # Validate date
         target_date = validate_date(date)
         
-        # Determine if target is crypto or fiat
-        if target_symbol in CRYPTO_ID_MAP:
-            # Crypto-to-crypto pair
-            target_id = get_crypto_id(target_symbol)
-            vs_currency = "usd"  # Use USD as intermediate
-            is_crypto_target = True
-        else:
-            # Crypto-to-fiat pair
-            vs_currency = get_fiat_code(target_symbol)
-            target_id = None
-            is_crypto_target = False
+        # Get crypto price (always in terms of USD)
+        crypto_yf_symbol = get_yfinance_symbol(crypto_symbol, is_crypto=True)
+        crypto_price = get_price_at_date(crypto_yf_symbol, target_date)
         
-        # Get crypto price
-        price = get_price_from_coingecko(crypto_id, vs_currency, target_date)
-        
-        if price is None:
+        if crypto_price is None:
             return None
         
-        if is_crypto_target:
-            # Get target crypto price in USD
-            target_price = get_price_from_coingecko(target_id, "usd", target_date)
+        # Determine if target is crypto or fiat
+        if target_symbol in CRYPTO_SYMBOLS:
+            # Crypto-to-crypto pair
+            target_yf_symbol = get_yfinance_symbol(target_symbol, is_crypto=True)
+            target_price = get_price_at_date(target_yf_symbol, target_date)
             
             if target_price and target_price != 0:
-                price = price / target_price
+                price = crypto_price / target_price
             else:
                 return None
+        else:
+            # Crypto-to-fiat pair
+            target_yf_symbol = get_yfinance_symbol(target_symbol, is_crypto=False)
+            
+            if target_yf_symbol is None:
+                # USD is the base, so crypto_price is already in USD
+                price = crypto_price
+            else:
+                # Get fiat exchange rate to USD
+                fiat_rate = get_price_at_date(target_yf_symbol, target_date)
+                
+                if fiat_rate and fiat_rate != 0:
+                    # Convert USD price to target fiat
+                    price = crypto_price / fiat_rate
+                else:
+                    return None
         
         return {
             "pair": pair.upper(),
@@ -243,11 +207,11 @@ def get_historical_price(pair: str, date: str) -> Optional[Dict]:
             "formatted_price": f"{price:,.8f}" if price else "N/A"
         }
         
-    except requests.exceptions.RequestException as e:
-        print(f"API Error: {e}", file=sys.stderr)
-        return None
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
         return None
 
 
