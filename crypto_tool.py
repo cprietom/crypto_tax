@@ -3,6 +3,8 @@ import pandas as pd
 import sys
 import os
 import warnings
+import urllib.request
+import json
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import timedelta
 
@@ -15,6 +17,8 @@ market_data_cache = {}
 TICKER_MAP = {
     'XBT': 'BTC', 'ZEUR': 'EUR', 'ZUSD': 'USD', 'ZGBP': 'GBP',
     'XETH': 'ETH', 'XXRP': 'XRP', 'XLTC': 'LTC', 'XXLM': 'XLM',
+    'IOTA': 'IOTA',
+    'MIOTA': 'IOTA', # Si el CSV origen dice MIOTA, lo normaliza a IOTA
     'REPV2': 'REP'
 }
 
@@ -99,6 +103,35 @@ def fetch_yahoo_bulk(ticker, dt_obj):
 
     return None
 
+def fetch_binance_fallback(asset, dt_obj):
+    # Solo aplicamos este fallback para IOTA
+    if asset not in ["IOTA", "MIOTA"]:
+        return None
+
+    symbol = "IOTAUSDT"
+
+    # Binance usa milisegundos. Restamos 24h para asegurarnos de capturar la vela diaria correcta
+    target_ms = int(dt_obj.timestamp() * 1000)
+    start_ms = target_ms - 86400000
+
+    # Solicitamos velas de 1 día (1d)
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&startTime={start_ms}&limit=2"
+    print(f"url:  {url}")
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+            if data and len(data) > 0:
+                # El formato de Binance es:
+                # [Open time, Open, High, Low, Close, Volume, ...]
+                # El índice 4 corresponde al precio de cierre (Close)
+                return float(data[0][4])
+    except Exception as e:
+        print(f"Error en Binance fallback: {e}")
+        pass
+
+    return None
+
 def get_price_info(asset, target_currency, dt_obj):
     """
     Motor de precios: Resuelve consultas directas, Fiat y Triangula altcoins.
@@ -142,8 +175,8 @@ def get_price_info(asset, target_currency, dt_obj):
             return precio
 
     # 3. TRIANGULACIÓN: Fallback si no existe el par directo (Ej: IOTA-USDC)
-    p_asset_usd = fetch_yahoo_bulk(f"{asset}-USD", dt_obj)
-
+    ticker_a_buscar = f"{asset}-USD"
+    p_asset_usd = fetch_yahoo_bulk(ticker_a_buscar, dt_obj)
     if p_asset_usd and p_asset_usd > 0:
         # Caso A: Se pide en EUR pero solo tenemos el precio en USD
         if target_currency == "EUR":
@@ -158,13 +191,29 @@ def get_price_info(asset, target_currency, dt_obj):
             price_cache[cache_key] = p_asset_usd
             return p_asset_usd
 
+
         # Caso C: Paridad cruzada entre criptos
         else:
+
             p_target_usd = fetch_yahoo_bulk(f"{target_currency}-USD", dt_obj)
             if p_target_usd and p_target_usd > 0:
                 precio_final = p_asset_usd / p_target_usd
                 price_cache[cache_key] = precio_final
                 return precio_final
+
+    fallback_price = fetch_binance_fallback(asset, dt_obj)
+    if fallback_price:
+        # Si el target es EUR, hacemos la conversión desde el proxy USD(T)
+        if target_currency == "EUR":
+            p_eur_usd = fetch_yahoo_bulk("EURUSD=X", dt_obj)
+            p_usd_eur = (1.0 / p_eur_usd) if (p_eur_usd and p_eur_usd > 0) else 0.83
+            precio_final = fallback_price * p_usd_eur
+            price_cache[cache_key] = precio_final
+            return precio_final
+
+        # Si el target es USD, USDC, etc. devolvemos directamente
+        price_cache[cache_key] = fallback_price
+        return fallback_price
 
     price_cache[cache_key] = 0.0
     return 0.0
